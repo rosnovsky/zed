@@ -187,11 +187,11 @@ spec:
               value: ${ZED_ENVIRONMENT}
             - name: AUTO_JOIN_CHANNEL_ID
               value: "${AUTO_JOIN_CHANNEL_ID}"
-            - name: OTEL_ENDPOINT
+            - name: AXIOM_ENDPOINT
               value: https://api.axiom.co
-            - name: OTEL_DATASET,
+            - name: AXIOM_DATASET,
               value: telemetry
-            - name: OTEL_API_TOKEN
+            - name: AXIOM_API_TOKEN
               valueFrom:
                 secretKeyRef:
                   name: axiom-api-token

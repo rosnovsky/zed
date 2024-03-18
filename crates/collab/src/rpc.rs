@@ -153,6 +153,14 @@ pub struct Server {
     teardown: watch::Sender<bool>,
 }
 
+impl fmt::Debug for Server {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Server")
+            .field("id", &self.id.lock())
+            .finish()
+    }
+}
+
 pub(crate) struct ConnectionPoolGuard<'a> {
     guard: parking_lot::MutexGuard<'a, ConnectionPool>,
     _not_send: PhantomData<Rc<()>>,
@@ -285,6 +293,7 @@ impl Server {
         Arc::new(server)
     }
 
+    #[tracing::instrument]
     pub async fn start(&self) -> Result<()> {
         let server_id = *self.id.lock();
         let app_state = self.app_state.clone();
@@ -2802,6 +2811,8 @@ async fn join_channel_internal(
     response: Box<impl JoinChannelInternalResponse>,
     session: Session,
 ) -> Result<()> {
+    tracing::info!("testing");
+
     let joined_room = {
         leave_room_for_session(&session).await?;
         let db = session.db().await;

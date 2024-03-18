@@ -128,15 +128,14 @@ pub struct Config {
     pub slack_panics_webhook: Option<String>,
     pub auto_join_channel_id: Option<ChannelId>,
 
-    /// Configures the log level (ignored if OpenTelemetry collection is enabled)
+    /// Logs to stdout, even if Axiom telemetry is enabled
+    pub log: Option<bool>,
+    /// Configures the log level. Enables logging, but only if Axiom isn't enabled.
     pub rust_log: Option<String>,
-    /// Logs JSON instead of a pretty format (ignored if OpenTelemetry collection is enabled)
-    pub log_json: Option<bool>,
 
-    /// OpenTelemetry configuration. All 3 fields must be specified to enable OpenTelemetry collection.
-    pub otel_endpoint: Option<String>,
-    pub otel_api_token: Option<String>,
-    pub otel_dataset: Option<String>,
+    /// Axiom telemetry configuration. All 3 fields must be specified to enable OpenTelemetry collection.
+    pub axiom_api_token: Option<String>,
+    pub axiom_dataset: Option<String>,
 }
 
 impl Config {
@@ -144,37 +143,22 @@ impl Config {
         self.zed_environment == "development".into()
     }
 
-    pub fn tracing_config(&self) -> TracingConfig {
-        match (
-            &self.otel_endpoint,
-            &self.otel_api_token,
-            &self.otel_dataset,
-        ) {
-            (Some(endpoint), Some(api_token), Some(dataset)) => TracingConfig::OpenTelemetry {
-                endpoint: endpoint.clone(),
-                api_token: api_token.clone(),
-                dataset: dataset.clone(),
+    pub fn open_telemetry(&self) -> Option<OpenTelemetryConfig> {
+        self.axiom_api_token
+            .clone()
+            .zip(self.axiom_dataset.clone())
+            .map(|(api_token, dataset)| OpenTelemetryConfig {
+                api_token,
+                dataset,
                 environment: self.zed_environment.clone(),
-            },
-            _ => TracingConfig::Log {
-                level: self.rust_log.clone().unwrap_or_else(|| "info".to_string()),
-                json: self.log_json.unwrap_or(false),
-            },
-        }
+            })
     }
 }
 
-pub enum TracingConfig {
-    Log {
-        level: String,
-        json: bool,
-    },
-    OpenTelemetry {
-        endpoint: String,
-        api_token: String,
-        dataset: String,
-        environment: Arc<str>,
-    },
+pub struct OpenTelemetryConfig {
+    pub api_token: String,
+    pub dataset: String,
+    pub environment: Arc<str>,
 }
 
 #[derive(Default, Deserialize)]

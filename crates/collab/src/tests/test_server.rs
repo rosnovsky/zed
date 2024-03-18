@@ -499,7 +499,7 @@ impl TestServer {
                 live_kit_key: None,
                 live_kit_secret: None,
                 rust_log: None,
-                log_json: None,
+                log: None,
                 zed_environment: "test".into(),
                 blob_store_url: None,
                 blob_store_region: None,
@@ -513,9 +513,8 @@ impl TestServer {
                 zed_client_checksum_seed: None,
                 slack_panics_webhook: None,
                 auto_join_channel_id: None,
-                otel_endpoint: None,
-                otel_api_token: None,
-                otel_dataset: None,
+                axiom_api_token: None,
+                axiom_dataset: None,
             },
         })
     }

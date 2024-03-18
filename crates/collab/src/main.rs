@@ -2,28 +2,27 @@ use anyhow::anyhow;
 use axum::{extract::MatchedPath, http::Request, routing::get, Extension, Router};
 use collab::{
     api::fetch_extensions_from_blob_store_periodically, db, env, executor::Executor, AppState,
-    Config, MigrateConfig, Result, TracingConfig,
+    Config, MigrateConfig, OpenTelemetryConfig, Result,
 };
 use db::Database;
 use std::{
     env::args,
     net::{SocketAddr, TcpListener},
     path::Path,
+    str::FromStr,
     sync::Arc,
 };
 #[cfg(unix)]
 use tokio::signal::unix::SignalKind;
 use tower_http::trace::{self, TraceLayer};
 use tracing::Level;
-use tracing_subscriber::{
-    filter::EnvFilter, fmt::format::JsonFields, util::SubscriberInitExt, Layer,
-};
-use util::ResultExt;
+use tracing_subscriber::{EnvFilter, Registry};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const REVISION: Option<&'static str> = option_env!("GITHUB_SHA");
 
 #[tokio::main]
+#[tracing::instrument]
 async fn main() -> Result<()> {
     if let Err(error) = env::load_dotenv() {
         eprintln!(
@@ -56,7 +55,7 @@ async fn main() -> Result<()> {
             };
 
             let config = envy::from_env::<Config>().expect("error loading config");
-            init_tracing(config.tracing_config(), service_name.to_string());
+            init_tracing(&config, service_name.to_string())?;
 
             run_migrations().await?;
 
@@ -180,82 +179,50 @@ async fn handle_liveness_probe(Extension(state): Extension<Arc<AppState>>) -> Re
     Ok("ok".to_string())
 }
 
-pub fn init_tracing(config: TracingConfig, service_name: String) -> Option<()> {
-    use std::str::FromStr;
-    use tracing_subscriber::layer::SubscriberExt;
+fn init_tracing(config: &Config, service_name: String) -> Result<()> {
+    use tracing_subscriber::prelude::*;
 
-    match config {
-        TracingConfig::Log { level, json } => {
-            let filter = EnvFilter::from_str(&level).log_err()?;
+    let axiom_layer = if let Some(OpenTelemetryConfig {
+        api_token,
+        dataset,
+        environment,
+    }) = config.open_telemetry()
+    {
+        println!("api_token: {}", api_token);
+        println!("dataset: {}", dataset);
+        println!("environment: {}", environment);
 
-            tracing_subscriber::registry()
-                .with(if json {
-                    Box::new(
-                        tracing_subscriber::fmt::layer()
-                            .fmt_fields(JsonFields::default())
-                            .event_format(
-                                tracing_subscriber::fmt::format()
-                                    .json()
-                                    .flatten_event(true)
-                                    .with_span_list(true),
-                            )
-                            .with_filter(filter),
-                    ) as Box<dyn Layer<_> + Send + Sync>
-                } else {
-                    Box::new(
-                        tracing_subscriber::fmt::layer()
-                            .event_format(tracing_subscriber::fmt::format().pretty())
-                            .with_filter(filter),
-                    )
-                })
-                .init();
-        }
-        TracingConfig::OpenTelemetry {
-            endpoint,
-            api_token,
-            dataset,
-            environment,
-        } => {
-            use opentelemetry::KeyValue;
-            use opentelemetry_otlp::{new_pipeline, Protocol, WithExportConfig};
-            use opentelemetry_sdk::trace;
-            use tonic::metadata::MetadataMap;
-            use tracing_opentelemetry::OpenTelemetryLayer;
-            use tracing_subscriber::Registry;
+        Some(
+            tracing_axiom::builder()
+                .with_service_name(service_name)
+                .with_token(api_token)
+                .with_dataset(dataset)
+                .with_tags(&[("environment", &environment)])
+                .layer::<Registry>()
+                .map_err(|e| anyhow!(e))?,
+        )
+    } else {
+        None
+    };
 
-            let mut metadata = MetadataMap::new();
-            metadata.insert(
-                "authorization",
-                format!("Bearer {}", api_token).parse().unwrap(),
-            );
-            metadata.insert("x-axiom-dataset", dataset.parse().unwrap());
+    let fmt_layer =
+        if config.log.unwrap_or(false) || (config.rust_log.is_some() && axiom_layer.is_none()) {
+            let log_level = config.rust_log.as_deref().unwrap_or("info");
+            let filter = EnvFilter::from_str(&log_level).map_err(|e| anyhow!(e))?;
 
-            let tracer = new_pipeline()
-                .tracing()
-                .with_exporter(
-                    opentelemetry_otlp::new_exporter()
-                        .tonic()
-                        .with_endpoint(endpoint)
-                        .with_metadata(metadata)
-                        .with_protocol(Protocol::Grpc),
-                )
-                .with_trace_config(
-                    trace::config().with_resource(opentelemetry_sdk::Resource::new(vec![
-                        KeyValue::new("service.name", service_name),
-                        KeyValue::new("service.version", REVISION.unwrap_or("unknown").to_string()),
-                        KeyValue::new("service.environment", environment),
-                        KeyValue::new("service.instance.id", uuid::Uuid::new_v4().to_string()),
-                    ])),
-                )
-                .install_batch(opentelemetry_sdk::runtime::Tokio)
-                .expect("Failed to install OpenTelemetry pipeline");
+            Some(
+                tracing_subscriber::fmt::layer()
+                    .event_format(tracing_subscriber::fmt::format().pretty())
+                    .with_filter(filter),
+            )
+        } else {
+            None
+        };
 
-            let telemetry = OpenTelemetryLayer::new(tracer);
-            let subscriber = Registry::default().with(telemetry);
+    tracing_subscriber::registry()
+        .with(axiom_layer)
+        .with(fmt_layer)
+        .init();
 
-            tracing::subscriber::set_global_default(subscriber).expect("Failed to set subscriber");
-        }
-    }
-
-    None
+    Ok(())
 }
