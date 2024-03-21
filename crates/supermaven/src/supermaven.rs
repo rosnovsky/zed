@@ -25,7 +25,7 @@ use std::{
 use util::ResultExt;
 
 pub struct Supermaven {
-    process: Child,
+    _process: Child,
     next_state_id: SupermavenStateId,
     states: HashMap<SupermavenStateId, CompletionState>,
     update_txs: Vec<oneshot::Sender<()>>,
@@ -37,7 +37,7 @@ pub struct Supermaven {
 }
 
 impl Supermaven {
-    pub fn launch(cx: &mut AppContext) -> Task<Result<Self>> {
+    pub fn launch(cx: &mut AppContext) -> Task<Result<()>> {
         cx.spawn(|cx| async move {
             let binary_path = &std::env::var("SUPERMAVEN_AGENT_BINARY")
                 .unwrap_or_else(|_| "/Users/as-cii/Downloads/sm-agent".to_string());
@@ -59,15 +59,17 @@ impl Supermaven {
                 .stdout
                 .take()
                 .context("failed to get stdout for process")?;
-
-            cx.update(|cx| Self::new(process, stdin, stdout, cx))
+            cx.update(|cx| {
+                let supermaven = Self::new(process, stdin, stdout, cx);
+                cx.set_global(supermaven);
+            })
         })
     }
 
     fn new(process: Child, stdin: ChildStdin, stdout: ChildStdout, cx: &mut AppContext) -> Self {
         let (outgoing_tx, outgoing_rx) = mpsc::unbounded();
         Self {
-            process,
+            _process: process,
             next_state_id: SupermavenStateId::default(),
             states: HashMap::default(),
             update_txs: Vec::new(),
@@ -84,10 +86,6 @@ impl Supermaven {
             }),
             registered_editors: HashMap::default(),
         }
-    }
-
-    pub fn kill(&mut self) {
-        self.process.kill().ok();
     }
 
     fn register_editor(&mut self, _editor: &mut Editor, cx: &mut ViewContext<Editor>) {
@@ -202,7 +200,7 @@ impl Supermaven {
                 }
             }
             _ => {
-                todo!()
+                dbg!(&message);
             }
         }
     }
@@ -226,16 +224,45 @@ struct RegisteredEditor {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
     use gpui::{Context, TestAppContext};
-    use language::{Buffer, BufferId};
+    use language::{Buffer, BufferId, LanguageRegistry};
+    use settings::SettingsStore;
 
     #[gpui::test]
     async fn test_exploratory(cx: &mut TestAppContext) {
-        cx.executor().allow_parking();
-        let mut supermaven = cx.update(Supermaven::launch).await.unwrap();
+        let settings_store = cx.update(SettingsStore::test);
+        cx.set_global(settings_store);
+        let background_executor = cx.executor();
+        background_executor.allow_parking();
 
-        let buffer = cx.new_model(|_cx| Buffer::new(0, BufferId::new(1).unwrap(), "Hello "));
+        cx.update(Supermaven::launch).await.unwrap();
+
+        let language_registry = Arc::new(LanguageRegistry::test(background_executor.clone()));
+
+        let markdown = language_registry.language_for_name("Markdown");
+
+        let buffer = cx.new_model(|cx| {
+            let mut buffer = Buffer::new(
+                0,
+                BufferId::new(cx.entity_id().as_u64()).unwrap(),
+                "import this",
+            );
+            buffer.set_language_registry(language_registry);
+            cx.spawn(|buffer, mut cx| async move {
+                let markdown = markdown.await?;
+                buffer.update(&mut cx, |buffer: &mut Buffer, cx| {
+                    buffer.set_language(Some(markdown), cx);
+                })?;
+                anyhow::Ok(())
+            })
+            .detach_and_log_err(cx);
+            buffer
+        });
+
+        // let buffer = dbg!(cx.new_model(|_cx| Buffer::new(0, BufferId::new(1).unwrap(), "Hello ")));
         let _editor = cx.add_window(|cx| Editor::for_buffer(buffer, None, cx));
 
         // let state_update = StateUpdateMessage {
@@ -249,6 +276,6 @@ mod tests {
             .timer(std::time::Duration::from_secs(60))
             .await;
 
-        supermaven.kill();
+        // supermaven.kill();
     }
 }
