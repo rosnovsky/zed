@@ -45,7 +45,7 @@ impl Supermaven {
             let binary_path = Path::new(binary_path);
             let mut process = Command::new(binary_path)
                 .arg("stdio")
-                .env("SM_LOG_PATH", "/Users/as-cii/dev/test-python/log.txt")
+                // .env("SM_LOG_PATH", "/Users/as-cii/dev/test-python/log.txt")
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
@@ -175,6 +175,7 @@ impl Supermaven {
             let Some(line) = line.strip_prefix(MESSAGE_PREFIX) else {
                 continue;
             };
+            dbg!(&line);
             let Some(message) = serde_json::from_str::<SupermavenMessage>(&line)
                 .context("failed to deserialize line from stdout")
                 .log_err()

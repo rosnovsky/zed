@@ -96,12 +96,18 @@ pub struct SupermavenPopupMessage {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub struct ActivationRequest {
+    pub activate_url: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SupermavenMessage {
     Response(SupermavenResponse),
     Metadata(SupermavenMetadataMessage),
     Apology { message: Option<String> },
-    ActivationRequest { activate_url: String },
+    ActivationRequest(ActivationRequest),
     ActivationSuccess,
     Passthrough { passthrough: Box<SupermavenMessage> },
     Popup(SupermavenPopupMessage),
