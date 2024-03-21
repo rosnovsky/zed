@@ -13,6 +13,7 @@ use gpui::{
     WindowContext,
 };
 use messages::*;
+use project::Project;
 use serde::{Deserialize, Serialize};
 use smol::{
     io::AsyncWriteExt,
@@ -228,13 +229,15 @@ mod tests {
 
     use super::*;
     use gpui::{Context, TestAppContext};
-    use language::{Buffer, BufferId, LanguageRegistry};
+    use language::{
+        language_settings::{AllLanguageSettings, AllLanguageSettingsContent},
+        Buffer, BufferId, LanguageRegistry,
+    };
     use settings::SettingsStore;
 
     #[gpui::test]
     async fn test_exploratory(cx: &mut TestAppContext) {
-        let settings_store = cx.update(SettingsStore::test);
-        cx.set_global(settings_store);
+        init_test(cx);
         let background_executor = cx.executor();
         background_executor.allow_parking();
 
@@ -263,7 +266,7 @@ mod tests {
         });
 
         // let buffer = dbg!(cx.new_model(|_cx| Buffer::new(0, BufferId::new(1).unwrap(), "Hello ")));
-        let _editor = cx.add_window(|cx| Editor::for_buffer(buffer, None, cx));
+        let editor = cx.add_window(|cx| Editor::for_buffer(buffer, None, cx));
 
         // let state_update = StateUpdateMessage {
         //     kind: StateUpdateKind::StateUpdate,
@@ -277,5 +280,32 @@ mod tests {
             .await;
 
         // supermaven.kill();
+    }
+
+    pub(crate) fn update_test_language_settings(
+        cx: &mut TestAppContext,
+        f: impl Fn(&mut AllLanguageSettingsContent),
+    ) {
+        _ = cx.update(|cx| {
+            SettingsStore::update(cx, |store, cx| {
+                store.update_user_settings::<AllLanguageSettings>(cx, f);
+            });
+        });
+    }
+
+    pub fn init_test(cx: &mut TestAppContext) {
+        _ = cx.update(|cx| {
+            let store = SettingsStore::test(cx);
+            cx.set_global(store);
+            theme::init(theme::LoadThemes::JustBase, cx);
+            // release_channel::init("0.0.0", cx);
+            // client::init_settings(cx);
+            language::init(cx);
+            Project::init_settings(cx);
+            // workspace::init_settings(cx);
+            editor::init(cx);
+        });
+
+        update_test_language_settings(cx, |_| {});
     }
 }
