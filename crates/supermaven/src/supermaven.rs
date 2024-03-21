@@ -248,19 +248,19 @@ mod tests {
 
         let language_registry = Arc::new(LanguageRegistry::test(background_executor.clone()));
 
-        let markdown = language_registry.language_for_name("Markdown");
+        let python = language_registry.language_for_name("Python");
 
         let buffer = cx.new_model(|cx| {
             let mut buffer = Buffer::new(
                 0,
                 BufferId::new(cx.entity_id().as_u64()).unwrap(),
-                "import this",
+                "import pandas as pd",
             );
             buffer.set_language_registry(language_registry);
             cx.spawn(|buffer, mut cx| async move {
-                let markdown = markdown.await?;
+                let python = python.await?;
                 buffer.update(&mut cx, |buffer: &mut Buffer, cx| {
-                    buffer.set_language(Some(markdown), cx);
+                    buffer.set_language(Some(python), cx);
                 })?;
                 anyhow::Ok(())
             })
@@ -272,14 +272,9 @@ mod tests {
         // let buffer = dbg!(cx.new_model(|_cx| Buffer::new(0, BufferId::new(1).unwrap(), "Hello ")));
         let editor = cx.add_window(|cx| Editor::for_buffer(buffer, None, cx));
 
-        editor.update(cx, |editor, cx| editor.insert("HEY", cx));
-
-        // let state_update = StateUpdateMessage {
-        //     kind: StateUpdateKind::StateUpdate,
-        //     new_id: "123".into(),
-        //     updates: vec![],
-        // };
-        //
+        editor.update(cx, |editor, cx| editor.insert("\n", cx));
+        editor.update(cx, |editor, cx| editor.insert("import numpy as", cx));
+        editor.update(cx, |editor, cx| editor.insert("\n", cx));
 
         cx.executor()
             .timer(std::time::Duration::from_secs(60))
