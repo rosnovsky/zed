@@ -1,6 +1,7 @@
-use crate::Direction;
 use gpui::{AppContext, Model, ModelContext};
 use language::Buffer;
+
+use crate::Direction;
 
 pub trait InlineCompletionProvider: 'static + Sized {
     fn is_enabled(
