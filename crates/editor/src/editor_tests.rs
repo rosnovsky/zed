@@ -1,5 +1,6 @@
 use super::*;
 use crate::{
+    inline_completion_provider::COPILOT_DEBOUNCE_TIMEOUT,
     scroll::scroll_amount::ScrollAmount,
     test::{
         assert_text_with_selections, build_editor, editor_lsp_test_context::EditorLspTestContext,
