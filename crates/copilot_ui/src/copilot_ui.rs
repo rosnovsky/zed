@@ -14,7 +14,9 @@ pub fn init(telemetry: Arc<Telemetry>, cx: &mut AppContext) {
         cx.observe_new_views(move |editor: &mut Editor, cx: &mut ViewContext<Editor>| {
             if editor.mode() == EditorMode::Full {
                 let provider = cx.new_model(|_| {
-                    CopilotCompletionProvider::new(copilot.clone(), telemetry.clone())
+                    let mut ccp = CopilotCompletionProvider::new(copilot.clone());
+                    ccp.set_telemetry(telemetry.clone());
+                    ccp
                 });
                 editor.set_inline_completion_provider(provider, cx)
             }
