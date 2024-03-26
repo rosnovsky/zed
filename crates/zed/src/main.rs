@@ -19,7 +19,10 @@ use editor::{Editor, EditorMode};
 use env_logger::Builder;
 use fs::RealFs;
 use futures::{future, StreamExt};
-use gpui::{App, AppContext, AsyncAppContext, Context, SemanticVersion, Task, ViewContext};
+use gpui::{
+    AnyWindowHandle, App, AppContext, AsyncAppContext, Context, SemanticVersion, Task, ViewContext,
+    WeakView,
+};
 use image_viewer;
 use isahc::{prelude::Configurable, Request};
 use language::LanguageRegistry;
@@ -37,18 +40,21 @@ use settings::{
 use simplelog::ConfigBuilder;
 use smol::process::Command;
 use std::{
+    cell::RefCell,
     env,
     ffi::OsStr,
     fs::OpenOptions,
     io::{IsTerminal, Write},
     panic,
     path::Path,
+    rc::Rc,
     sync::{
         atomic::{AtomicU32, Ordering},
         Arc,
     },
     thread,
 };
+use supermaven::{Supermaven, SupermavenCompletionProvider};
 use theme::{ActiveTheme, SystemAppearance, ThemeRegistry, ThemeSettings};
 use util::{
     http::{HttpClient, HttpClientWithUrl},
@@ -1074,43 +1080,70 @@ fn watch_file_types(fs: Arc<dyn fs::Fs>, cx: &mut AppContext) {
 fn watch_file_types(_fs: Arc<dyn fs::Fs>, _cx: &mut AppContext) {}
 
 fn init_inline_completion_provider(telemetry: Arc<Telemetry>, cx: &mut AppContext) {
-    if let Some(copilot) = Copilot::global(cx) {
-        cx.observe_new_views(move |editor: &mut Editor, cx: &mut ViewContext<Editor>| {
-            if editor.mode() == EditorMode::Full {
-                // We renamed some of these actions to not be copilot-specific, but that
-                // would have not been backwards-compatible. So here we are re-registering
-                // the actions with the old names to not break people's keymaps.
-                editor
-                    .register_action(cx.listener(
-                        |editor, _: &copilot::Suggest, cx: &mut ViewContext<Editor>| {
-                            editor.show_inline_completion(&Default::default(), cx);
-                        },
-                    ))
-                    .register_action(cx.listener(
-                        |editor, _: &copilot::NextSuggestion, cx: &mut ViewContext<Editor>| {
-                            editor.next_inline_completion(&Default::default(), cx);
-                        },
-                    ))
-                    .register_action(cx.listener(
-                        |editor, _: &copilot::PreviousSuggestion, cx: &mut ViewContext<Editor>| {
-                            editor.previous_inline_completion(&Default::default(), cx);
-                        },
-                    ))
-                    .register_action(cx.listener(
-                        |editor,
-                         _: &editor::actions::AcceptPartialCopilotSuggestion,
-                         cx: &mut ViewContext<Editor>| {
-                            editor.accept_partial_inline_completion(&Default::default(), cx);
-                        },
-                    ));
+    struct RegisteredEditor {
+        handle: WeakView<Editor>,
+        window: AnyWindowHandle,
+    }
 
-                let provider = cx.new_model(|_| {
-                    CopilotCompletionProvider::new(copilot.clone())
-                        .with_telemetry(telemetry.clone())
+    let registered_editors = Rc::new(RefCell::new(Vec::<RegisteredEditor>::new()));
+
+    let launch_supermaven = Supermaven::launch(cx);
+    cx.spawn({
+        let registered_editors = registered_editors.clone();
+        |mut cx| async move {
+            // todo!("do not unwrap")
+            launch_supermaven.await.unwrap();
+
+            for editor in registered_editors.borrow().iter() {
+                _ = editor.window.update(&mut cx, |_, cx| {
+                    _ = editor.handle.update(cx, |editor, cx| {
+                        let provider = cx.new_model(|_| SupermavenCompletionProvider::new());
+                        editor.set_inline_completion_provider(provider, cx)
+                    });
                 });
+            }
+        }
+    })
+    .detach();
+
+    cx.observe_new_views(move |editor: &mut Editor, cx: &mut ViewContext<Editor>| {
+        if editor.mode() == EditorMode::Full {
+            // We renamed some of these actions to not be copilot-specific, but that
+            // would have not been backwards-compatible. So here we are re-registering
+            // the actions with the old names to not break people's keymaps.
+            editor
+                .register_action(cx.listener(
+                    |editor, _: &copilot::Suggest, cx: &mut ViewContext<Editor>| {
+                        editor.show_inline_completion(&Default::default(), cx);
+                    },
+                ))
+                .register_action(cx.listener(
+                    |editor, _: &copilot::NextSuggestion, cx: &mut ViewContext<Editor>| {
+                        editor.next_inline_completion(&Default::default(), cx);
+                    },
+                ))
+                .register_action(cx.listener(
+                    |editor, _: &copilot::PreviousSuggestion, cx: &mut ViewContext<Editor>| {
+                        editor.previous_inline_completion(&Default::default(), cx);
+                    },
+                ))
+                .register_action(cx.listener(
+                    |editor,
+                     _: &editor::actions::AcceptPartialCopilotSuggestion,
+                     cx: &mut ViewContext<Editor>| {
+                        editor.accept_partial_inline_completion(&Default::default(), cx);
+                    },
+                ));
+
+            if cx.has_global::<Supermaven>() {
+                let provider = cx.new_model(|_| SupermavenCompletionProvider::new());
                 editor.set_inline_completion_provider(provider, cx)
             }
-        })
-        .detach();
-    }
+            registered_editors.borrow_mut().push(RegisteredEditor {
+                handle: cx.view().downgrade(),
+                window: cx.window_handle(),
+            });
+        }
+    })
+    .detach();
 }

@@ -12576,6 +12576,7 @@ dependencies = [
  "settings",
  "simplelog",
  "smol",
+ "supermaven",
  "task",
  "tasks_ui",
  "terminal_view",
