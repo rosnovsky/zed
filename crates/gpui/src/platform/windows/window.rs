@@ -42,8 +42,8 @@ use crate::*;
 
 pub(crate) struct WindowsWindowInner {
     hwnd: HWND,
-    origin: Cell<Point<GlobalPixels>>,
-    physical_size: Cell<Size<GlobalPixels>>,
+    origin: Cell<Point<DevicePixels>>,
+    physical_size: Cell<Size<DevicePixels>>,
     scale_factor: Cell<f32>,
     input_handler: Cell<Option<PlatformInputHandler>>,
     renderer: RefCell<BladeRenderer>,
@@ -54,6 +54,7 @@ pub(crate) struct WindowsWindowInner {
     display: RefCell<Rc<WindowsDisplay>>,
     last_ime_input: RefCell<Option<String>>,
     click_state: RefCell<ClickState>,
+    fullscreen: Cell<Option<StyleAndBounds>>,
 }
 
 impl WindowsWindowInner {
@@ -67,12 +68,12 @@ impl WindowsWindowInner {
     ) -> Self {
         let monitor_dpi = unsafe { GetDpiForWindow(hwnd) } as f32;
         let origin = Cell::new(Point {
-            x: GlobalPixels(cs.x as f32),
-            y: GlobalPixels(cs.y as f32),
+            x: DevicePixels(cs.x as i32),
+            y: DevicePixels(cs.y as i32),
         });
         let physical_size = Cell::new(Size {
-            width: GlobalPixels(cs.cx as f32),
-            height: GlobalPixels(cs.cy as f32),
+            width: DevicePixels(cs.cx as i32),
+            height: DevicePixels(cs.cy as i32),
         });
         let scale_factor = Cell::new(monitor_dpi / USER_DEFAULT_SCREEN_DPI as f32);
         let input_handler = Cell::new(None);
@@ -115,6 +116,7 @@ impl WindowsWindowInner {
         let display = RefCell::new(display);
         let last_ime_input = RefCell::new(None);
         let click_state = RefCell::new(ClickState::new());
+        let fullscreen = Cell::new(None);
         Self {
             hwnd,
             origin,
@@ -129,15 +131,69 @@ impl WindowsWindowInner {
             display,
             last_ime_input,
             click_state,
+            fullscreen,
         }
     }
 
     fn is_maximized(&self) -> bool {
-        unsafe { IsZoomed(self.hwnd) }.as_bool()
+        !self.is_fullscreen() && unsafe { IsZoomed(self.hwnd) }.as_bool()
     }
 
     fn is_minimized(&self) -> bool {
         unsafe { IsIconic(self.hwnd) }.as_bool()
+    }
+
+    fn is_fullscreen(&self) -> bool {
+        let fullscreen = self.fullscreen.take();
+        let is_fullscreen = fullscreen.is_some();
+        self.fullscreen.set(fullscreen);
+        is_fullscreen
+    }
+
+    async fn toggle_fullscreen(self: Rc<Self>) {
+        let StyleAndBounds {
+            style,
+            x,
+            y,
+            cx,
+            cy,
+        } = if let Some(state) = self.fullscreen.take() {
+            state
+        } else {
+            let style = WINDOW_STYLE(unsafe { get_window_long(self.hwnd, GWL_STYLE) } as _);
+            let mut rc = RECT::default();
+            unsafe { GetWindowRect(self.hwnd, &mut rc) }.log_err();
+            self.fullscreen.set(Some(StyleAndBounds {
+                style,
+                x: rc.left,
+                y: rc.top,
+                cx: rc.right - rc.left,
+                cy: rc.bottom - rc.top,
+            }));
+            let style = style
+                & !(WS_THICKFRAME | WS_SYSMENU | WS_MAXIMIZEBOX | WS_MINIMIZEBOX | WS_CAPTION);
+            let bounds = self.display.borrow().clone().bounds();
+            StyleAndBounds {
+                style,
+                x: bounds.left().0 as i32,
+                y: bounds.top().0 as i32,
+                cx: bounds.size.width.0 as i32,
+                cy: bounds.size.height.0 as i32,
+            }
+        };
+        unsafe { set_window_long(self.hwnd, GWL_STYLE, style.0 as isize) };
+        unsafe {
+            SetWindowPos(
+                self.hwnd,
+                HWND::default(),
+                x,
+                y,
+                cx,
+                cy,
+                SWP_FRAMECHANGED | SWP_NOACTIVATE | SWP_NOZORDER,
+            )
+        }
+        .log_err();
     }
 
     pub(crate) fn title_bar_padding(&self) -> Pixels {
@@ -243,15 +299,15 @@ impl WindowsWindowInner {
     }
 
     fn handle_move_msg(&self, lparam: LPARAM) -> Option<isize> {
-        let x = lparam.signed_loword() as f32;
-        let y = lparam.signed_hiword() as f32;
+        let x = lparam.signed_loword() as i32;
+        let y = lparam.signed_hiword() as i32;
         self.origin.set(Point {
-            x: GlobalPixels(x),
-            y: GlobalPixels(y),
+            x: DevicePixels(x),
+            y: DevicePixels(y),
         });
         let size = self.physical_size.get();
-        let center_x = x + size.width.0 / 2.0;
-        let center_y = y + size.height.0 / 2.0;
+        let center_x = x + size.width.0 / 2;
+        let center_y = y + size.height.0 / 2;
         let monitor_bounds = self.display.borrow().bounds();
         if center_x < monitor_bounds.left().0
             || center_x > monitor_bounds.right().0
@@ -273,12 +329,12 @@ impl WindowsWindowInner {
     }
 
     fn handle_size_msg(&self, lparam: LPARAM) -> Option<isize> {
-        let width = lparam.loword().max(1) as f32;
-        let height = lparam.hiword().max(1) as f32;
+        let width = lparam.loword().max(1) as i32;
+        let height = lparam.hiword().max(1) as i32;
         let scale_factor = self.scale_factor.get();
         let new_physical_size = Size {
-            width: GlobalPixels(width),
-            height: GlobalPixels(height),
+            width: DevicePixels(width),
+            height: DevicePixels(height),
         };
         self.physical_size.set(new_physical_size);
         self.renderer.borrow_mut().update_drawable_size(Size {
@@ -592,7 +648,7 @@ impl WindowsWindowInner {
         if let Some(callback) = callbacks.input.as_mut() {
             let x = lparam.signed_loword() as f32;
             let y = lparam.signed_hiword() as f32;
-            let physical_point = point(GlobalPixels(x), GlobalPixels(y));
+            let physical_point = point(DevicePixels(x as i32), DevicePixels(y as i32));
             let click_count = self.click_state.borrow_mut().update(button, physical_point);
             let scale_factor = self.scale_factor.get();
             let event = MouseDownEvent {
@@ -821,7 +877,7 @@ impl WindowsWindowInner {
 
     /// SEE: https://learn.microsoft.com/en-us/windows/win32/winmsg/wm-nccalcsize
     fn handle_calc_client_size(&self, wparam: WPARAM, lparam: LPARAM) -> Option<isize> {
-        if !self.hide_title_bar {
+        if !self.hide_title_bar || self.is_fullscreen() {
             return None;
         }
 
@@ -868,8 +924,8 @@ impl WindowsWindowInner {
         let height = size_rect.bottom - size_rect.top;
 
         self.physical_size.set(Size {
-            width: GlobalPixels(width as f32),
-            height: GlobalPixels(height as f32),
+            width: DevicePixels(width as i32),
+            height: DevicePixels(height as i32),
         });
 
         if self.hide_title_bar {
@@ -939,6 +995,10 @@ impl WindowsWindowInner {
                 | HTBOTTOMLEFT
         ) {
             return Some(hit.0);
+        }
+
+        if self.is_fullscreen() {
+            return Some(HTCLIENT as _);
         }
 
         let dpi = unsafe { GetDpiForWindow(self.hwnd) };
@@ -1017,8 +1077,8 @@ impl WindowsWindowInner {
             };
             unsafe { ScreenToClient(self.hwnd, &mut cursor_point) };
             let physical_point = point(
-                GlobalPixels(cursor_point.x as f32),
-                GlobalPixels(cursor_point.y as f32),
+                DevicePixels(cursor_point.x as i32),
+                DevicePixels(cursor_point.y as i32),
             );
             let click_count = self.click_state.borrow_mut().update(button, physical_point);
             let scale_factor = self.scale_factor.get();
@@ -1245,7 +1305,7 @@ impl Drop for WindowsWindow {
 }
 
 impl PlatformWindow for WindowsWindow {
-    fn bounds(&self) -> Bounds<GlobalPixels> {
+    fn bounds(&self) -> Bounds<DevicePixels> {
         Bounds {
             origin: self.inner.origin.get(),
             size: self.inner.physical_size.get(),
@@ -1425,12 +1485,16 @@ impl PlatformWindow for WindowsWindow {
         unsafe { ShowWindowAsync(self.inner.hwnd, SW_MAXIMIZE) };
     }
 
-    // todo(windows)
-    fn toggle_fullscreen(&self) {}
+    fn toggle_fullscreen(&self) {
+        self.inner
+            .platform_inner
+            .foreground_executor
+            .spawn(self.inner.clone().toggle_fullscreen())
+            .detach();
+    }
 
-    // todo(windows)
     fn is_fullscreen(&self) -> bool {
-        false
+        self.inner.is_fullscreen()
     }
 
     // todo(windows)
@@ -1610,7 +1674,7 @@ impl IDropTarget_Impl for WindowsDragDropHandler {
 struct ClickState {
     button: MouseButton,
     last_click: Instant,
-    last_position: Point<GlobalPixels>,
+    last_position: Point<DevicePixels>,
     current_count: usize,
 }
 
@@ -1625,7 +1689,7 @@ impl ClickState {
     }
 
     /// update self and return the needed click count
-    pub fn update(&mut self, button: MouseButton, new_position: Point<GlobalPixels>) -> usize {
+    pub fn update(&mut self, button: MouseButton, new_position: Point<DevicePixels>) -> usize {
         if self.button == button && self.is_double_click(new_position) {
             self.current_count += 1;
         } else {
@@ -1639,7 +1703,7 @@ impl ClickState {
     }
 
     #[inline]
-    fn is_double_click(&self, new_position: Point<GlobalPixels>) -> bool {
+    fn is_double_click(&self, new_position: Point<DevicePixels>) -> bool {
         let diff = self.last_position - new_position;
 
         self.last_click.elapsed() < DOUBLE_CLICK_INTERVAL
@@ -1775,10 +1839,10 @@ fn oemkey_vkcode_to_string(code: u16) -> Option<String> {
 }
 
 #[inline]
-fn logical_size(physical_size: Size<GlobalPixels>, scale_factor: f32) -> Size<Pixels> {
+fn logical_size(physical_size: Size<DevicePixels>, scale_factor: f32) -> Size<Pixels> {
     Size {
-        width: px(physical_size.width.0 / scale_factor),
-        height: px(physical_size.height.0 / scale_factor),
+        width: px(physical_size.width.0 as f32 / scale_factor),
+        height: px(physical_size.height.0 as f32 / scale_factor),
     }
 }
 
@@ -1790,56 +1854,49 @@ fn logical_point(x: f32, y: f32, scale_factor: f32) -> Point<Pixels> {
     }
 }
 
+struct StyleAndBounds {
+    style: WINDOW_STYLE,
+    x: i32,
+    y: i32,
+    cx: i32,
+    cy: i32,
+}
+
 // https://learn.microsoft.com/en-us/windows/win32/api/shellapi/nf-shellapi-dragqueryfilew
 const DRAGDROP_GET_FILES_COUNT: u32 = 0xFFFFFFFF;
 // https://learn.microsoft.com/en-us/windows/win32/controls/ttm-setdelaytime?redirectedfrom=MSDN
 const DOUBLE_CLICK_INTERVAL: Duration = Duration::from_millis(500);
 // https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getsystemmetrics
-const DOUBLE_CLICK_SPATIAL_TOLERANCE: f32 = 4.0;
+const DOUBLE_CLICK_SPATIAL_TOLERANCE: i32 = 4;
 
 #[cfg(test)]
 mod tests {
     use super::ClickState;
-    use crate::{point, GlobalPixels, MouseButton};
+    use crate::{point, DevicePixels, MouseButton};
     use std::time::Duration;
 
     #[test]
     fn test_double_click_interval() {
         let mut state = ClickState::new();
         assert_eq!(
-            state.update(
-                MouseButton::Left,
-                point(GlobalPixels(0.0), GlobalPixels(0.0))
-            ),
+            state.update(MouseButton::Left, point(DevicePixels(0), DevicePixels(0))),
             1
         );
         assert_eq!(
-            state.update(
-                MouseButton::Right,
-                point(GlobalPixels(0.0), GlobalPixels(0.0))
-            ),
+            state.update(MouseButton::Right, point(DevicePixels(0), DevicePixels(0))),
             1
         );
         assert_eq!(
-            state.update(
-                MouseButton::Left,
-                point(GlobalPixels(0.0), GlobalPixels(0.0))
-            ),
+            state.update(MouseButton::Left, point(DevicePixels(0), DevicePixels(0))),
             1
         );
         assert_eq!(
-            state.update(
-                MouseButton::Left,
-                point(GlobalPixels(0.0), GlobalPixels(0.0))
-            ),
+            state.update(MouseButton::Left, point(DevicePixels(0), DevicePixels(0))),
             2
         );
         state.last_click -= Duration::from_millis(700);
         assert_eq!(
-            state.update(
-                MouseButton::Left,
-                point(GlobalPixels(0.0), GlobalPixels(0.0))
-            ),
+            state.update(MouseButton::Left, point(DevicePixels(0), DevicePixels(0))),
             1
         );
     }
@@ -1848,31 +1905,19 @@ mod tests {
     fn test_double_click_spatial_tolerance() {
         let mut state = ClickState::new();
         assert_eq!(
-            state.update(
-                MouseButton::Left,
-                point(GlobalPixels(-3.0), GlobalPixels(0.0))
-            ),
+            state.update(MouseButton::Left, point(DevicePixels(-3), DevicePixels(0))),
             1
         );
         assert_eq!(
-            state.update(
-                MouseButton::Left,
-                point(GlobalPixels(0.0), GlobalPixels(3.0))
-            ),
+            state.update(MouseButton::Left, point(DevicePixels(0), DevicePixels(3))),
             2
         );
         assert_eq!(
-            state.update(
-                MouseButton::Right,
-                point(GlobalPixels(3.0), GlobalPixels(2.0))
-            ),
+            state.update(MouseButton::Right, point(DevicePixels(3), DevicePixels(2))),
             1
         );
         assert_eq!(
-            state.update(
-                MouseButton::Right,
-                point(GlobalPixels(10.0), GlobalPixels(0.0))
-            ),
+            state.update(MouseButton::Right, point(DevicePixels(10), DevicePixels(0))),
             1
         );
     }

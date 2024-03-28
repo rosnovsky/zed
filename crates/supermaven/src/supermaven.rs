@@ -9,8 +9,8 @@ use futures::{
     AsyncBufReadExt, StreamExt,
 };
 use gpui::{
-    AppContext, AsyncAppContext, Bounds, EntityId, Global, GlobalPixels, InteractiveText, Model,
-    Render, StyledText, Task, ViewContext,
+    point, size, AppContext, AsyncAppContext, Bounds, DevicePixels, EntityId, Global,
+    InteractiveText, Model, Render, StyledText, Task, ViewContext,
 };
 use language::{language_settings::all_language_settings, Anchor, Buffer, ToOffset};
 use messages::*;
@@ -20,13 +20,7 @@ use smol::{
     io::AsyncWriteExt,
     process::{Child, ChildStdin, ChildStdout, Command},
 };
-use std::{
-    cmp::Reverse,
-    future::Future,
-    iter,
-    path::{Path, PathBuf},
-    process::Stdio,
-};
+use std::{future::Future, path::PathBuf, process::Stdio};
 pub use supermaven_completion_provider::*;
 use ui::prelude::*;
 use util::ResultExt;
@@ -239,8 +233,8 @@ impl Supermaven {
                 cx.open_window(
                     gpui::WindowOptions {
                         bounds: Some(Bounds::new(
-                            gpui::point(GlobalPixels::from(0.), GlobalPixels::from(0.)),
-                            gpui::size(GlobalPixels::from(800.), GlobalPixels::from(600.)),
+                            point(DevicePixels::from(0), DevicePixels::from(0)),
+                            size(DevicePixels::from(800), DevicePixels::from(600)),
                         )),
                         titlebar: None,
                         focus: false,
