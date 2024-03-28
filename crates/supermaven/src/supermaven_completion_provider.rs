@@ -1,9 +1,8 @@
-use crate::{common_prefix, ResponseItem, Supermaven};
+use crate::{ResponseItem, Supermaven};
 use anyhow::Result;
 use editor::{Direction, InlineCompletionProvider};
 use gpui::{AppContext, Global, Model, ModelContext, Task};
 use language::{language_settings::all_language_settings, Anchor, Buffer, ToOffset};
-use std::path::PathBuf;
 
 pub struct SupermavenCompletionProvider {
     pending_refresh: Task<Result<()>>,
@@ -56,7 +55,7 @@ impl InlineCompletionProvider for SupermavenCompletionProvider {
         direction: Direction,
         cx: &mut ModelContext<Self>,
     ) {
-        // implement cycling
+        // todo!(implement cycling)
         // match direction {
         //     Direction::Prev => {
         //         self.active_completion_index = if self.active_completion_index == 0 {
@@ -95,10 +94,12 @@ impl InlineCompletionProvider for SupermavenCompletionProvider {
             text: String,
         }
 
+        let buffer_id = buffer.entity_id();
         let buffer = buffer.read(cx);
+        dbg!(buffer.remote_id(), buffer.text(), buffer.version());
         // let cursor_offset = cursor_position.to_offset(buffer);
         let mut candidate: Option<Candidate> = None;
-        for completion in Supermaven::get(cx).completions() {
+        for completion in Supermaven::get(cx).completions(buffer_id) {
             let mut completion_start = completion.start.to_offset(buffer);
             let completion_text = completion
                 .completion
@@ -132,4 +133,11 @@ impl InlineCompletionProvider for SupermavenCompletionProvider {
 
         candidate.map(|candidate| candidate.text)
     }
+}
+
+fn common_prefix<T1: Iterator<Item = char>, T2: Iterator<Item = char>>(a: T1, b: T2) -> usize {
+    a.zip(b)
+        .take_while(|(a, b)| a == b)
+        .map(|(a, _)| a.len_utf8())
+        .sum()
 }

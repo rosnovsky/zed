@@ -1916,6 +1916,7 @@ impl BufferSnapshot {
                 .item()
                 .filter(|insertion| insertion.timestamp == anchor.timestamp)
             else {
+                dbg!(self.insertions.items(&()));
                 panic!(
                     "invalid anchor {:?}. buffer id: {}, version: {:?}",
                     anchor, self.remote_id, self.version

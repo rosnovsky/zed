@@ -2,15 +2,15 @@ mod messages;
 mod supermaven_completion_provider;
 
 use anyhow::{Context as _, Result};
-use collections::{BTreeMap, HashMap};
+use collections::BTreeMap;
 use futures::{
     channel::{mpsc, oneshot},
     io::BufReader,
     AsyncBufReadExt, StreamExt,
 };
 use gpui::{
-    AppContext, AsyncAppContext, Bounds, Global, GlobalPixels, InteractiveText, Model, Render,
-    StyledText, Task, ViewContext,
+    AppContext, AsyncAppContext, Bounds, EntityId, Global, GlobalPixels, InteractiveText, Model,
+    Render, StyledText, Task, ViewContext,
 };
 use language::{language_settings::all_language_settings, Anchor, Buffer, ToOffset};
 use messages::*;
@@ -139,6 +139,7 @@ impl Supermaven {
             ..
         } = self
         {
+            let buffer_id = buffer.entity_id();
             let buffer = buffer.read(cx);
             let path = buffer
                 .file()
@@ -154,6 +155,7 @@ impl Supermaven {
             states.insert(
                 state_id,
                 CompletionState {
+                    buffer_id,
                     start: cursor_position.bias_left(buffer),
                     completion: Vec::new(),
                 },
@@ -177,9 +179,13 @@ impl Supermaven {
         }
     }
 
-    pub fn completions(&self) -> impl Iterator<Item = &CompletionState> {
+    pub fn completions(&self, buffer_id: EntityId) -> impl Iterator<Item = &CompletionState> {
         let completions = if let Self::Started { states, .. } = self {
-            Some(states.values())
+            Some(
+                states
+                    .values()
+                    .filter(move |state| state.buffer_id == buffer_id),
+            )
         } else {
             None
         };
@@ -272,6 +278,7 @@ pub struct SupermavenStateId(usize);
 
 #[allow(dead_code)]
 pub struct CompletionState {
+    buffer_id: EntityId,
     start: Anchor,
     completion: Vec<ResponseItem>,
 }
@@ -297,16 +304,6 @@ impl Render for ActivationRequestPrompt {
             move |_, cx| cx.open_url(&activate_url)
         })
     }
-}
-
-pub(crate) fn common_prefix<T1: Iterator<Item = char>, T2: Iterator<Item = char>>(
-    a: T1,
-    b: T2,
-) -> usize {
-    a.zip(b)
-        .take_while(|(a, b)| a == b)
-        .map(|(a, _)| a.len_utf8())
-        .sum()
 }
 
 // #[cfg(test)]
