@@ -48,8 +48,8 @@ pub enum Supermaven {
     Disabled,
     Started {
         _process: Child,
-        next_state_id: SupermavenStateId,
-        states: BTreeMap<SupermavenStateId, SupermavenCompletionState>,
+        next_state_id: SupermavenCompletionStateId,
+        states: BTreeMap<SupermavenCompletionStateId, SupermavenCompletionState>,
         outgoing_tx: mpsc::UnboundedSender<OutboundMessage>,
         _handle_outgoing_messages: Task<Result<()>>,
         _handle_incoming_messages: Task<Result<()>>,
@@ -83,12 +83,12 @@ impl Supermaven {
                     Self::update(cx, |this, cx| {
                         if let Self::Disabled = this {
                             let (outgoing_tx, outgoing_rx) = mpsc::unbounded();
-                            outgoing_tx
-                                .unbounded_send(OutboundMessage::UseFreeVersion)
-                                .unwrap();
+                            // outgoing_tx
+                            //     .unbounded_send(OutboundMessage::UseFreeVersion)
+                            //     .unwrap();
                             *this = Self::Started {
                                 _process: process,
-                                next_state_id: SupermavenStateId::default(),
+                                next_state_id: SupermavenCompletionStateId::default(),
                                 states: BTreeMap::default(),
                                 outgoing_tx,
                                 _handle_outgoing_messages: cx.spawn(|_cx| {
@@ -118,9 +118,10 @@ impl Supermaven {
         buffer: &Model<Buffer>,
         cursor_position: Anchor,
         cx: &AppContext,
-    ) -> impl Stream<Item = ()> {
+    ) -> (Option<SupermavenCompletionStateId>, impl Stream<Item = ()>) {
         let (updates_tx, mut updates_rx) = watch::channel();
         postage::stream::Stream::try_recv(&mut updates_rx).unwrap();
+        let mut completion_state_id = None;
 
         if let Self::Started {
             next_state_id,
@@ -142,6 +143,7 @@ impl Supermaven {
             let state_id = *next_state_id;
             next_state_id.0 += 1;
 
+            completion_state_id = Some(state_id);
             states.insert(
                 state_id,
                 SupermavenCompletionState {
@@ -164,23 +166,18 @@ impl Supermaven {
             }));
         }
 
-        updates_rx
+        (completion_state_id, updates_rx)
     }
 
-    pub fn completions(
+    pub fn completion(
         &self,
-        buffer_id: EntityId,
-    ) -> impl Iterator<Item = &SupermavenCompletionState> {
-        let completions = if let Self::Started { states, .. } = self {
-            Some(
-                states
-                    .values()
-                    .filter(move |state| state.buffer_id == buffer_id),
-            )
+        id: SupermavenCompletionStateId,
+    ) -> Option<&SupermavenCompletionState> {
+        if let Self::Started { states, .. } = self {
+            states.get(&id)
         } else {
             None
-        };
-        completions.into_iter().flatten()
+        }
     }
 
     async fn handle_outgoing_messages(
@@ -242,7 +239,7 @@ impl Supermaven {
             }
             SupermavenMessage::Response(response) => {
                 if let Self::Started { states, .. } = self {
-                    let state_id = SupermavenStateId(response.state_id.parse().unwrap());
+                    let state_id = SupermavenCompletionStateId(response.state_id.parse().unwrap());
                     if let Some(state) = states.get_mut(&state_id) {
                         for item in &response.items {
                             if let ResponseItem::Text { text } = item {
@@ -265,7 +262,7 @@ impl Supermaven {
 impl Global for Supermaven {}
 
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
-pub struct SupermavenStateId(usize);
+pub struct SupermavenCompletionStateId(usize);
 
 #[allow(dead_code)]
 pub struct SupermavenCompletionState {
