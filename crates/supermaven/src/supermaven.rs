@@ -3,24 +3,21 @@ mod supermaven_completion_provider;
 
 use anyhow::{Context as _, Result};
 use collections::BTreeMap;
-use futures::{
-    channel::{mpsc, oneshot},
-    io::BufReader,
-    AsyncBufReadExt, StreamExt,
-};
+use futures::{channel::mpsc, io::BufReader, AsyncBufReadExt, Stream, StreamExt};
 use gpui::{
     point, size, AppContext, AsyncAppContext, Bounds, DevicePixels, EntityId, Global,
     InteractiveText, Model, Render, StyledText, Task, ViewContext,
 };
 use language::{language_settings::all_language_settings, Anchor, Buffer, ToOffset};
 use messages::*;
+use postage::watch;
 use serde::{Deserialize, Serialize};
 use settings::SettingsStore;
 use smol::{
     io::AsyncWriteExt,
     process::{Child, ChildStdin, ChildStdout, Command},
 };
-use std::{future::Future, ops::Range, path::PathBuf, process::Stdio};
+use std::{ops::Range, path::PathBuf, process::Stdio};
 pub use supermaven_completion_provider::*;
 use ui::prelude::*;
 use util::ResultExt;
@@ -52,8 +49,7 @@ pub enum Supermaven {
     Started {
         _process: Child,
         next_state_id: SupermavenStateId,
-        states: BTreeMap<SupermavenStateId, CompletionState>,
-        update_txs: Vec<oneshot::Sender<()>>,
+        states: BTreeMap<SupermavenStateId, SupermavenCompletionState>,
         outgoing_tx: mpsc::UnboundedSender<OutboundMessage>,
         _handle_outgoing_messages: Task<Result<()>>,
         _handle_incoming_messages: Task<Result<()>>,
@@ -94,7 +90,6 @@ impl Supermaven {
                                 _process: process,
                                 next_state_id: SupermavenStateId::default(),
                                 states: BTreeMap::default(),
-                                update_txs: Vec::new(),
                                 outgoing_tx,
                                 _handle_outgoing_messages: cx.spawn(|_cx| {
                                     Self::handle_outgoing_messages(outgoing_rx, stdin)
@@ -123,12 +118,13 @@ impl Supermaven {
         buffer: &Model<Buffer>,
         cursor_position: Anchor,
         cx: &AppContext,
-    ) -> impl Future<Output = ()> {
-        let (tx, rx) = oneshot::channel();
+    ) -> impl Stream<Item = ()> {
+        let (updates_tx, mut updates_rx) = watch::channel();
+        postage::stream::Stream::try_recv(&mut updates_rx).unwrap();
+
         if let Self::Started {
             next_state_id,
             states,
-            update_txs,
             outgoing_tx,
             ..
         } = self
@@ -148,11 +144,12 @@ impl Supermaven {
 
             states.insert(
                 state_id,
-                CompletionState {
+                SupermavenCompletionState {
                     buffer_id,
                     range: cursor_position.bias_left(buffer)..cursor_position.bias_right(buffer),
                     completion: Vec::new(),
                     text: String::new(),
+                    updates_tx,
                 },
             );
             let _ = outgoing_tx.unbounded_send(OutboundMessage::StateUpdate(StateUpdateMessage {
@@ -165,16 +162,15 @@ impl Supermaven {
                     StateUpdate::CursorUpdate(CursorPositionUpdateMessage { path, offset }),
                 ],
             }));
-
-            update_txs.push(tx);
         }
 
-        async move {
-            _ = rx.await;
-        }
+        updates_rx
     }
 
-    pub fn completions(&self, buffer_id: EntityId) -> impl Iterator<Item = &CompletionState> {
+    pub fn completions(
+        &self,
+        buffer_id: EntityId,
+    ) -> impl Iterator<Item = &SupermavenCompletionState> {
         let completions = if let Self::Started { states, .. } = self {
             Some(
                 states
@@ -245,10 +241,7 @@ impl Supermaven {
                 );
             }
             SupermavenMessage::Response(response) => {
-                if let Self::Started {
-                    states, update_txs, ..
-                } = self
-                {
+                if let Self::Started { states, .. } = self {
                     let state_id = SupermavenStateId(response.state_id.parse().unwrap());
                     if let Some(state) = states.get_mut(&state_id) {
                         for item in &response.items {
@@ -257,9 +250,7 @@ impl Supermaven {
                             }
                         }
                         state.completion.extend(response.items);
-                        for update_tx in update_txs.drain(..) {
-                            let _ = update_tx.send(());
-                        }
+                        *state.updates_tx.borrow_mut() = ();
                     }
                 }
             }
@@ -277,11 +268,12 @@ impl Global for Supermaven {}
 pub struct SupermavenStateId(usize);
 
 #[allow(dead_code)]
-pub struct CompletionState {
+pub struct SupermavenCompletionState {
     buffer_id: EntityId,
     range: Range<Anchor>,
     completion: Vec<ResponseItem>,
     text: String,
+    updates_tx: watch::Sender<()>,
 }
 
 struct ActivationRequestPrompt {
