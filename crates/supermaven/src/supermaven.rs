@@ -20,7 +20,7 @@ use smol::{
     io::AsyncWriteExt,
     process::{Child, ChildStdin, ChildStdout, Command},
 };
-use std::{future::Future, path::PathBuf, process::Stdio};
+use std::{future::Future, ops::Range, path::PathBuf, process::Stdio};
 pub use supermaven_completion_provider::*;
 use ui::prelude::*;
 use util::ResultExt;
@@ -150,8 +150,9 @@ impl Supermaven {
                 state_id,
                 CompletionState {
                     buffer_id,
-                    start: cursor_position.bias_left(buffer),
+                    range: cursor_position.bias_left(buffer)..cursor_position.bias_right(buffer),
                     completion: Vec::new(),
+                    text: String::new(),
                 },
             );
             let _ = outgoing_tx.unbounded_send(OutboundMessage::StateUpdate(StateUpdateMessage {
@@ -250,6 +251,11 @@ impl Supermaven {
                 {
                     let state_id = SupermavenStateId(response.state_id.parse().unwrap());
                     if let Some(state) = states.get_mut(&state_id) {
+                        for item in &response.items {
+                            if let ResponseItem::Text { text } = item {
+                                state.text.push_str(text);
+                            }
+                        }
                         state.completion.extend(response.items);
                         for update_tx in update_txs.drain(..) {
                             let _ = update_tx.send(());
@@ -273,8 +279,9 @@ pub struct SupermavenStateId(usize);
 #[allow(dead_code)]
 pub struct CompletionState {
     buffer_id: EntityId,
-    start: Anchor,
+    range: Range<Anchor>,
     completion: Vec<ResponseItem>,
+    text: String,
 }
 
 struct ActivationRequestPrompt {
