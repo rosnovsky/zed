@@ -90,7 +90,16 @@ fn main() {
     let session_id = Uuid::new_v4().to_string();
     init_panic_hook(&app, installation_id.clone(), session_id.clone());
 
-    let fs = Arc::new(RealFs);
+    let git_binary_path = if option_env!("ZED_BUNDLE").as_deref() == Some("true") {
+        app.path_for_auxiliary_executable("git")
+            .context("could not find git binary path")
+            .log_err()
+    } else {
+        None
+    };
+    log::info!("Using git binary path: {:?}", git_binary_path);
+
+    let fs = Arc::new(RealFs::new(git_binary_path));
     let user_settings_file_rx = watch_config_file(
         &app.background_executor(),
         fs.clone(),
@@ -198,12 +207,21 @@ fn main() {
         watch_file_types(fs.clone(), cx);
 
         languages.set_theme(cx.theme().clone());
+
         cx.observe_global::<SettingsStore>({
             let languages = languages.clone();
             let http = http.clone();
             let client = client.clone();
 
             move |cx| {
+                for &mut window in cx.windows().iter_mut() {
+                    let background_appearance = cx.theme().window_background_appearance();
+                    window
+                        .update(cx, |_, cx| {
+                            cx.set_background_appearance(background_appearance)
+                        })
+                        .ok();
+                }
                 languages.set_theme(cx.theme().clone());
                 let new_host = &client::ClientSettings::get_global(cx).server_url;
                 if &http.base_url() != new_host {
